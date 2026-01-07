@@ -1,0 +1,38 @@
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: 'Inter', sans-serif;
+  }
+}
+
+/* RPi Performance Hack: Disable backdrop-filter globally */
+/* This prevents the GPU from choking on real-time blur calculations */
+.backdrop-blur-sm, .backdrop-blur-md, .backdrop-blur-lg, .backdrop-blur-xl, .backdrop-blur-2xl, .backdrop-blur-3xl {
+  backdrop-filter: none !important;
+  background-color: rgba(15, 23, 42, 0.95) !important; /* Solid dark fallback */
+}
+
+/* Specific Urdu Font Tuning */
+.font-serif { 
+  font-family: 'Noto Nastaliq Urdu', serif;
+  line-height: 2 !important; 
+  padding-top: 4px; 
+  padding-bottom: 4px; 
+}
+
+@media print { 
+  body { display: none !important; } 
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #f1f1f1; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
