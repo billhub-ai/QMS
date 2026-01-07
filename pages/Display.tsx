@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useQueue } from '../context/QueueContext';
-import { TokenStatus, Gender, DisplayMode, Token, AppState, Direction } from '../types';
+import { TokenStatus, Gender, Token, Direction } from '../types';
 import * as Icons from '../components/Icons';
 import { GoogleGenAI, Modality } from "@google/genai";
 import { DynamicIcon } from '../components/Icons';
@@ -9,6 +9,8 @@ import { DynamicIcon } from '../components/Icons';
 interface DisplayProps {
   onExit: () => void;
 }
+
+type ViewMode = 'STANDARD' | 'FOCUS_GRID';
 
 const getAvgWait = (tokenList: Token[]) => {
   const servedTokens = tokenList.filter(t => (t.status === TokenStatus.COMPLETED || t.status === TokenStatus.SERVING) && (t.firstServedAt || t.servedAt) && t.createdAt);
@@ -20,29 +22,47 @@ const getAvgWait = (tokenList: Token[]) => {
   return Math.round(totalWait / servedTokens.length / 60000);
 };
 
-const MedicalHeartbeat = () => (
-  <svg width="100%" height="100%" viewBox="0 0 100 30" className="text-emerald-500/40 ml-[1vw] w-[4vw] max-w-[60px] h-auto block">
-    <path d="M0 15 H30 L35 5 L45 25 L50 15 H100" fill="none" stroke="currentColor" strokeWidth="3" className="animate-[heartbeat_3s_ease-in-out_infinite]" />
-  </svg>
-);
+const TimeAgo = ({ timestamp, className = "" }: { timestamp?: number, className?: string }) => {
+  const [label, setLabel] = useState("");
+
+  useEffect(() => {
+    if (!timestamp) return;
+    const update = () => {
+      const diff = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+      if (diff < 1) setLabel("Just now");
+      else if (diff < 60) setLabel(`${diff}m ago`);
+      else setLabel(`${Math.floor(diff / 60)}h ago`);
+    };
+    update();
+    const interval = setInterval(update, 60000); // Update every minute
+    return () => clearInterval(interval);
+  }, [timestamp]);
+
+  if (!timestamp) return null;
+  return <span className={className}>{label}</span>;
+};
 
 const ClockWidget = () => {
   const [time, setTime] = useState(new Date());
   useEffect(() => { const t = setInterval(() => setTime(new Date()), 1000); return () => clearInterval(t); }, []);
-  const weekday = time.toLocaleDateString('en-US', { weekday: 'long' });
+  
+  const weekday = time.toLocaleDateString('en-US', { weekday: 'short' });
   const day = time.getDate();
-  const dayStr = String(day).padStart(2, '0');
-  const month = time.toLocaleString('en-US', { month: 'long' });
-  const year = time.getFullYear();
+  const month = time.toLocaleString('en-US', { month: 'short' });
+  
   return (
-    <div className="flex items-center gap-[2vw] leading-none pointer-events-none">
-       <div className="font-medium tracking-tight text-white tabular-nums leading-none filter drop-shadow-lg" style={{ fontSize: 'clamp(1.5rem, 3.5vh, 4rem)' }}>{time.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true })}</div>
-       <div className="hidden xl:block h-[3vh] w-px bg-white/20" />
-       <div className="text-emerald-400 font-medium tracking-wide flex items-center gap-[0.5em] opacity-90" style={{ fontSize: 'clamp(1rem, 2vh, 2.5rem)' }}><Icons.Calendar className="w-[1em] h-[1em]" /><span>{weekday}, {dayStr} {month}, {year}.</span></div>
+    <div className="flex flex-col items-end leading-none pointer-events-none select-none">
+       <div className="font-black tracking-tight text-white tabular-nums leading-none filter drop-shadow-lg mb-2" style={{ fontSize: 'clamp(3rem, 5vw, 6rem)' }}>
+         {time.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
+       </div>
+       <div className="text-emerald-400 font-bold tracking-widest uppercase flex items-center gap-4 opacity-90" style={{ fontSize: 'clamp(1rem, 1.5vw, 1.5rem)' }}>
+         <span>{weekday.toUpperCase()}, {day} {month.toUpperCase()}</span>
+       </div>
     </div>
   );
 };
 
+// --- AUTO SCROLL HOOK ---
 const useAutoScroll = (ref: React.RefObject<HTMLDivElement | null>, speed = 0.5, dependency: any = null) => {
   useEffect(() => {
     const el = ref.current;
@@ -52,164 +72,197 @@ const useAutoScroll = (ref: React.RefObject<HTMLDivElement | null>, speed = 0.5,
     let direction = 1; 
     let isPaused = false;
     let pauseTimeout: any = null;
+    
     const scroll = () => {
       if (!el || !el.isConnected) return;
       if (el.scrollHeight <= el.clientHeight) { el.scrollTop = 0; return; }
       if (isPaused) { animationId = requestAnimationFrame(scroll); return; }
+      
       accumulatedScroll += speed;
       if (accumulatedScroll >= 1) {
           const pixels = Math.floor(accumulatedScroll);
           el.scrollTop += pixels * direction;
           accumulatedScroll -= pixels;
       }
+      
       if (direction === 1 && Math.ceil(el.scrollTop + el.clientHeight) >= el.scrollHeight) {
           isPaused = true;
-          pauseTimeout = setTimeout(() => { direction = -1; isPaused = false; }, 3000); 
+          pauseTimeout = setTimeout(() => { direction = -1; isPaused = false; }, 5000); 
       }
       else if (direction === -1 && el.scrollTop <= 0) {
           isPaused = true;
-          pauseTimeout = setTimeout(() => { direction = 1; isPaused = false; }, 3000); 
+          pauseTimeout = setTimeout(() => { direction = 1; isPaused = false; }, 5000); 
       }
       animationId = requestAnimationFrame(scroll);
     };
-    animationId = requestAnimationFrame(scroll);
+    
+    // Initial delay
+    pauseTimeout = setTimeout(() => {
+        animationId = requestAnimationFrame(scroll);
+    }, 2000);
+    
     return () => { cancelAnimationFrame(animationId); clearTimeout(pauseTimeout); };
   }, [ref, speed, dependency]); 
 };
 
-// Play a gentle attention chime
+// --- AUDIO UTILS ---
 const playChime = (ctx: AudioContext, startTime: number) => {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    
     osc.connect(gain);
     gain.connect(ctx.destination);
-    
     osc.type = 'sine';
     osc.frequency.setValueAtTime(500, startTime);
     osc.frequency.exponentialRampToValueAtTime(1000, startTime + 0.1);
-    
     gain.gain.setValueAtTime(0, startTime);
     gain.gain.linearRampToValueAtTime(0.3, startTime + 0.05);
     gain.gain.exponentialRampToValueAtTime(0.01, startTime + 0.5);
-    
     osc.start(startTime);
     osc.stop(startTime + 0.5);
 };
 
-// Decode PCM audio from base64 (Gemini Format: 24kHz Mono 16-bit LE)
 const decodePCM = async (base64: string, ctx: AudioContext) => {
     const binaryString = atob(base64);
     const len = binaryString.length;
     const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-    }
-    
+    for (let i = 0; i < len; i++) { bytes[i] = binaryString.charCodeAt(i); }
     const dataInt16 = new Int16Array(bytes.buffer);
-    const numChannels = 1;
-    const sampleRate = 24000;
-    
-    const frameCount = dataInt16.length / numChannels;
-    const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
-    
+    const buffer = ctx.createBuffer(1, dataInt16.length, 24000);
     const channelData = buffer.getChannelData(0);
-    for (let i = 0; i < frameCount; i++) {
-        channelData[i] = dataInt16[i] / 32768.0;
-    }
-    
+    for (let i = 0; i < dataInt16.length; i++) { channelData[i] = dataInt16[i] / 32768.0; }
     return buffer;
 };
 
-// Active Sessions Panel
-const SessionCard: React.FC<{ token: Token }> = ({ token }) => {
+// --- SUB-COMPONENTS ---
+
+const SessionCard = React.memo(({ token, minimal = false }: { token: Token, minimal?: boolean }) => {
   const { state } = useQueue();
   const dept = state.departments.find(d => d.id === token.departmentId);
-  const patientGroup = state.patientGroups?.find(g => g.id === token.patientGroupId);
+  const counter = state.counters.find(c => c.id === token.counterId);
+  
+  if (minimal) {
+      return (
+        <div className="bg-slate-800 border-l-4 border-emerald-500 flex flex-col justify-center p-3 w-full h-full shadow-lg relative overflow-hidden group">
+            <div className="absolute top-2 right-2 flex items-center gap-1 opacity-70">
+                <Icons.Clock size={12} className="text-slate-400" />
+                <TimeAgo timestamp={token.servedAt} className="text-[1.2vh] font-bold text-slate-400 uppercase tracking-wide" />
+            </div>
+            <div className="font-black text-white font-mono text-[4vh] leading-none mb-1">{token.ticketNumber}</div>
+            <div className="font-bold text-emerald-400 text-[2vh] uppercase truncate">{counter?.name || 'Counter'}</div>
+        </div>
+      );
+  }
 
   return (
-    <div className="bg-slate-800 border border-white/10 rounded-xl flex items-center gap-4 group hover:border-emerald-500/40 transition-all shadow-lg relative overflow-hidden h-auto py-2 px-4 w-fit max-w-full min-w-0 animate-in fade-in slide-in-from-bottom-2">
-        <div className="absolute -right-4 -bottom-6 text-white opacity-[0.05] pointer-events-none rotate-12 z-0">
-            <DynamicIcon icon={dept?.icon} customIcon={dept?.customIcon} size={64} />
+    <div className="bg-slate-800 border-l-[8px] border-emerald-500 rounded-r-2xl flex items-center justify-between p-6 mb-4 w-full shadow-lg relative overflow-hidden shrink-0">
+        <div className="flex items-center gap-6 relative z-10">
+            <span className="font-black text-white font-mono tracking-tighter text-[clamp(3rem,4vw,5rem)] leading-none tabular-nums">
+                {token.ticketNumber}
+            </span>
         </div>
-        <div className="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500 z-10" />
-        
-        <div className="shrink-0 font-black text-white leading-none font-mono tracking-tighter tabular-nums z-10" style={{ fontSize: 'clamp(1.5rem, 3vh, 2.2rem)' }}>
-            {token.ticketNumber}
-        </div>
-        
-        <div className="w-px h-8 bg-white/10 shrink-0 z-10" />
-        
-        <div className="flex flex-col justify-center z-10">
-          <div className="font-black text-emerald-100 leading-none uppercase whitespace-nowrap" style={{ fontSize: 'clamp(0.7rem, 1.5vh, 1rem)' }}>
-              {state.counters.find(c => c.id === token.counterId)?.name}
+        <div className="flex flex-col items-end relative z-10 min-w-0">
+          <div className="font-black text-emerald-300 uppercase tracking-tight text-[clamp(1.5rem,2vw,2.5rem)] leading-none mb-1 truncate max-w-full">
+              {counter?.name}
           </div>
-          <div className="font-bold text-slate-400 uppercase tracking-wide mt-0.5 leading-none opacity-80 whitespace-nowrap" style={{ fontSize: 'clamp(0.6rem, 1.2vh, 0.8rem)' }}>
+          <div className="font-bold text-slate-400 uppercase tracking-wider text-[clamp(1rem,1.2vw,1.5rem)] truncate max-w-full">
               {dept?.name}
           </div>
+          <TimeAgo timestamp={token.servedAt} className="text-slate-500 text-[clamp(0.8rem,1vw,1.2rem)] font-medium mt-1 flex items-center gap-1" />
         </div>
-
-        {patientGroup && (
-            <div className={`shrink-0 flex items-center justify-center w-8 h-8 rounded-lg bg-${patientGroup.color || 'slate'}-500/20 text-${patientGroup.color || 'slate'}-300 border border-${patientGroup.color || 'slate'}-500/30 ml-1 z-10`}>
-                <DynamicIcon icon={patientGroup.icon} customIcon={patientGroup.customIcon} size={20} />
-            </div>
-        )}
     </div>
   );
-};
+});
 
-const ActiveSessionsPanel = ({ tokens, variant = 'bottom', showEng, showUrdu }: { tokens: Token[], variant?: 'sidebar' | 'bottom', showEng: boolean, showUrdu: boolean }) => {
+const ActiveSessionsPanel = ({ tokens, showEng, showUrdu }: { tokens: Token[], showEng: boolean, showUrdu: boolean }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
-  useAutoScroll(scrollRef, 0.4, tokens.length); 
-  const count = tokens.length;
+  useAutoScroll(scrollRef, 0.8, tokens.length); 
   
-  const wrapperClass = variant === 'bottom' 
-     ? 'w-full h-auto max-h-[30vh] shrink-0' 
-     : 'h-full flex-1 min-h-0';
-
-  if (count === 0 && variant === 'bottom') return <div className="transition-all duration-700 h-0 py-0 border-0 opacity-0 margin-0" />;
-
   return (
-    <div className={`bg-slate-900/90 rounded-2xl border border-white/10 flex flex-col shadow-xl transition-all duration-700 ease-in-out ${wrapperClass} opacity-100`}>
-        <div className="flex items-center gap-[1vw] mb-[0.5vh] px-4 pt-2 shrink-0">
-          <div className="w-[0.8vh] h-[0.8vh] bg-emerald-500 rounded-full animate-pulse shadow-[0_0_15px_rgba(16,185,129,0.6)]" />
-          <h3 className="font-black uppercase tracking-[0.4em] text-slate-400" style={{ fontSize: 'clamp(0.7rem, 1.2vh, 1rem)' }}>
-            {showEng && "In Session"}
+    <div className="flex flex-col h-full bg-slate-900/80 rounded-[3rem] border-2 border-white/10 overflow-hidden shadow-2xl backdrop-blur-md">
+        <div className="px-8 py-4 bg-slate-800 border-b border-white/10 flex items-center gap-6 shrink-0 h-[80px]">
+          <Icons.History className="text-emerald-500 w-8 h-8" />
+          <h3 className="font-black uppercase tracking-[0.2em] text-slate-300 text-xl">
+            {showEng && "Recent Calls"}
             {showEng && showUrdu && " / "}
-            {showUrdu && "جاری ہے"}
+            {showUrdu && "حالیہ ٹوکن"}
           </h3>
-          <div className="h-px bg-white/10 flex-1" />
         </div>
-        <div ref={scrollRef} className="flex-1 overflow-y-auto no-scrollbar px-3 pb-3 scroll-smooth">
-           <div className={`flex flex-wrap gap-3 content-start ${variant === 'sidebar' ? 'flex-col' : 'flex-row'}`}>
-               {tokens.map((token, idx) => <SessionCard key={`${token.id}-${idx}`} token={token} />)}
-           </div>
+        <div ref={scrollRef} className="flex-1 overflow-y-auto no-scrollbar p-6 relative">
+           {tokens.length === 0 ? (
+             <div className="absolute inset-0 flex items-center justify-center opacity-20">
+               <Icons.History className="w-40 h-40" />
+             </div>
+           ) : (
+             tokens.map((token, idx) => <SessionCard key={`${token.id}-${idx}`} token={token} />)
+           )}
         </div>
     </div>
   );
 };
 
-const CategoryHub = ({ name, nameUrdu, icon, customIcon, color = 'slate' }: any) => {
+const PulseCard: React.FC<{ group: any }> = ({ group }) => {
+    let borderColor = 'border-slate-700';
+    let textColor = 'text-slate-400';
+    
+    if (!group.isOffline) {
+        if (group.waiting > 10) { borderColor = 'border-rose-500'; textColor = 'text-rose-400'; }
+        else if (group.waiting > 5) { borderColor = 'border-amber-500'; textColor = 'text-amber-400'; }
+        else { borderColor = 'border-emerald-500'; textColor = 'text-emerald-400'; }
+    }
+
     return (
-        <div className={`flex flex-col items-center justify-center p-[1vh] rounded-[2rem] bg-${color}-900/40 border border-${color}-500/30 backdrop-blur-md shadow-2xl animate-in zoom-in slide-in-from-bottom-4 duration-700 w-full aspect-square max-w-[20vh] mx-auto`}>
-            {/* Tier 1: English Title */}
-            <span className={`text-[min(2cqi,2vh)] font-black uppercase tracking-widest text-${color}-100 mb-[0.5vh] leading-none text-center drop-shadow-md`}>
-                {name || "General"}
-            </span>
-            
-            {/* Tier 2: Large Icon */}
-            <div className={`text-${color}-400 drop-shadow-[0_0_30px_rgba(255,255,255,0.15)] my-[0.5vh] relative flex-1 flex items-center justify-center`}>
-                <div className={`absolute inset-0 bg-${color}-500/20 blur-xl rounded-full`} />
-                <DynamicIcon icon={icon} customIcon={customIcon} size="8vh" />
+        <div className={`relative overflow-hidden rounded-3xl border-l-[12px] bg-slate-800 shadow-md p-6 flex flex-col justify-between h-[16vh] min-h-[140px] ${borderColor}`}>
+            <div className="flex justify-between items-start mb-2">
+                <div className="max-w-[80%]">
+                    {group.displayEng && <h4 className="font-black uppercase leading-none text-slate-200 text-[clamp(1.2rem,2vw,2.5rem)] truncate">{group.name}</h4>}
+                    {group.displayUrdu && <h5 className="font-serif leading-none text-slate-400 text-[clamp(1.2rem,1.8vw,2.2rem)] truncate mt-1">{group.nameUrdu}</h5>}
+                </div>
+                {!group.isOffline && <div className="text-slate-500"><DynamicIcon icon={group.icon} customIcon={group.customIcon} size="2em" /></div>}
             </div>
             
-            {/* Tier 3: Urdu Title */}
-            <span className={`text-[min(2.5cqi,2.5vh)] font-serif font-bold text-${color}-200 mt-[0.5vh] leading-none text-center drop-shadow-md`}>
-                {nameUrdu || "جنرل"}
-            </span>
+            <div className="flex items-end justify-between mt-auto">
+                <div className="flex flex-col">
+                    <span className="text-[0.8em] font-bold uppercase text-slate-500 tracking-wider mb-1">Waiting</span>
+                    <span className={`font-black leading-none ${textColor} tabular-nums text-[clamp(3rem,5vw,6rem)]`}>
+                        {group.waiting}
+                    </span>
+                </div>
+                {!group.isOffline && (
+                    <div className="flex flex-col items-end opacity-60">
+                        <Icons.Clock className="w-5 h-5 mb-1" />
+                        <span className="font-bold text-white text-[1.2em]">{group.avgWait}m</span>
+                    </div>
+                )}
+                {group.isOffline && <span className="bg-slate-700 text-slate-300 px-4 py-2 rounded-xl text-lg font-bold uppercase tracking-wider self-end">Closed</span>}
+            </div>
         </div>
     );
 };
+
+const ClinicPulseSection = React.memo(({ operationalGroups, showEng, showUrdu }: any) => {
+    const scrollRef = useRef<HTMLDivElement>(null);
+    useAutoScroll(scrollRef, 0.4, operationalGroups.length);
+    
+    return (
+      <div className="flex flex-col h-full bg-slate-900/80 rounded-[3rem] border-2 border-white/10 overflow-hidden shadow-2xl backdrop-blur-md">
+         <div className="px-8 py-6 bg-slate-800 border-b border-white/10 flex items-center gap-6 shrink-0">
+            <Icons.Activity className="text-emerald-500 w-[clamp(2rem,2.5vw,3rem)] h-[clamp(2rem,2.5vw,3rem)]" /> 
+            <h3 className="text-slate-300 font-black uppercase tracking-[0.2em] text-[clamp(1.2rem,1.8vw,2rem)]">
+                {showEng && "Clinic Status"}
+                {showEng && showUrdu && " / "}
+                {showUrdu && "کلینک کی صورتحال"}
+            </h3>
+         </div>
+         <div ref={scrollRef} className="flex-1 overflow-y-auto no-scrollbar p-6">
+            <div className="grid grid-cols-1 gap-4">
+                {operationalGroups.map((group: any, idx: number) => (
+                    <PulseCard key={`${group.id}-${idx}`} group={group} />
+                ))}
+            </div>
+         </div>
+      </div>
+    );
+});
 
 interface NowServingProps { 
     ticketNumber?: string; 
@@ -221,271 +274,240 @@ interface NowServingProps {
     deptCustomIcon?: string; 
     groupName?: string; 
     groupNameUrdu?: string;
-    groupIcon?: string; 
-    groupCustomIcon?: string; 
     groupColor?: string; 
     showUrdu: boolean; 
     displayEng: boolean; 
     displayUrdu: boolean; 
-    direction?: Direction; 
+    direction?: Direction;
+    isGridMode?: boolean; 
 }
 
-const NowServingSection = React.memo(({ ticketNumber, gender, departmentName, departmentNameUrdu, counterName, deptIcon, deptCustomIcon, groupName, groupNameUrdu, groupIcon, groupCustomIcon, groupColor, displayEng, displayUrdu, direction }: NowServingProps) => {
+const NowServingSection = React.memo(({ ticketNumber, gender, departmentName, departmentNameUrdu, counterName, deptIcon, deptCustomIcon, groupName, groupNameUrdu, groupColor, displayEng, displayUrdu, direction, isGridMode }: NowServingProps) => {
     const [isBlinking, setIsBlinking] = useState(false);
-    useEffect(() => { if(ticketNumber) { setIsBlinking(true); const t = setTimeout(() => setIsBlinking(false), 1600); return () => clearTimeout(t); } }, [ticketNumber]);
+    useEffect(() => { if(ticketNumber) { setIsBlinking(true); const t = setTimeout(() => setIsBlinking(false), 2500); return () => clearTimeout(t); } }, [ticketNumber]);
     
-    // Direction Logic
-    const isDirectionActive = direction && direction !== 'NONE';
     const isLeft = direction === 'LEFT';
     const isRight = direction === 'RIGHT';
     const isStraight = direction === 'STRAIGHT';
 
-    return (
-      <div className={`flex-[1.5] relative rounded-2xl overflow-hidden shadow-2xl border bg-slate-900 bg-opacity-95 transition-all duration-700 ease-in-out flex flex-col min-h-0 ${isBlinking ? 'border-emerald-400 animate-flash-attention shadow-[0_0_60px_rgba(16,185,129,0.3)]' : 'border-white border-opacity-10'}`} style={{ containerType: 'inline-size' } as any}>
-          {ticketNumber ? (
-            <div key={ticketNumber} className="w-full h-full relative overflow-hidden flex flex-col items-center justify-between animate-in zoom-in-95 duration-500 min-h-0">
-              
-              {/* Background Watermark */}
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white opacity-[0.03] pointer-events-none z-0 transform -rotate-12">
-                  <DynamicIcon icon={deptIcon} customIcon={deptCustomIcon} size="50cqi" />
-              </div>
-              
-              {/* Top Bar: Dept & Counter */}
-              <div className="w-full bg-white/5 backdrop-blur-md border-b border-white/10 py-[1.2vh] flex items-center justify-between px-[2vw] relative z-10 shrink-0">
-                  <div className="flex flex-col items-start min-w-0">
-                      {displayEng && <span className="font-black text-slate-100 uppercase tracking-wide leading-tight truncate" style={{ fontSize: 'clamp(0.9rem, 2cqi, 2.5vh)' }}>{departmentName}</span>}
-                      {displayUrdu && departmentNameUrdu && <span className="font-serif text-slate-300 leading-none mt-0.5 truncate" style={{ fontSize: 'clamp(0.8rem, 1.8cqi, 2.2vh)' }} dir="rtl">{departmentNameUrdu}</span>}
-                  </div>
-                  <div className="bg-emerald-600 text-white px-[2cqi] py-[0.5vh] rounded-lg shadow-lg border border-emerald-400/30 shrink-0 ml-2">
-                      <span className="font-black tracking-tight leading-none uppercase" style={{ fontSize: 'clamp(1.2rem, 2.5cqi, 3.5vh)' }}>{counterName}</span>
-                  </div>
-              </div>
-              
-              {/* Main Content Area: 3-Column Grid */}
-              <div className="flex-1 w-full flex items-center relative z-20 overflow-hidden min-h-0">
-                  
-                  {/* LEFT COLUMN (25%) */}
-                  <div className="w-[25%] h-full flex flex-col items-center justify-center p-[1vh] min-w-0">
-                      {isLeft && (
-                          <div className="flex flex-col items-center justify-center animate-pulse drop-shadow-2xl">
-                              <span className="text-[min(2cqi,2vh)] font-black text-emerald-400 uppercase tracking-widest leading-none mb-1 whitespace-nowrap">GO LEFT</span>
-                              <Icons.ArrowLeft className="w-[8vh] h-[8vh] text-emerald-400 drop-shadow-[0_0_30px_rgba(52,211,153,0.8)] animate-bounce-left" strokeWidth={3} />
-                              <span className="text-[min(2.5cqi,2.5vh)] font-serif font-bold text-emerald-400 leading-none mt-1 whitespace-nowrap">بائیں جانب</span>
-                          </div>
-                      )}
-                      {(!isLeft && groupName) && (
-                          <CategoryHub name={groupName} nameUrdu={groupNameUrdu} icon={groupIcon} customIcon={groupCustomIcon} color={groupColor} />
-                      )}
-                  </div>
-
-                  {/* CENTER COLUMN (50%) - Token Spotlight */}
-                  <div className="flex-1 h-full flex flex-col items-center justify-center relative min-w-0">
-                        {/* Token Burst Effect */}
-                        <div key={`burst-${ticketNumber}`} className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[30vh] h-[30vh] bg-emerald-500 bg-opacity-20 blur-[60px] rounded-full animate-burst pointer-events-none mix-blend-screen" />
-                        
-                        <span className="font-black text-emerald-400 text-opacity-80 uppercase tracking-[0.3em] text-[min(1.8cqi,1.8vh)] mb-[0.5vh]">Token Number</span>
-                        
-                        {/* Huge Token Number - Tuned down to prevent clipping */}
-                        <span 
-                            className="font-black text-white leading-none tracking-tighter tabular-nums font-mono text-center whitespace-nowrap drop-shadow-2xl z-20" 
-                            style={{ 
-                                fontSize: 'min(25cqi, 35vh)', 
-                                animation: isBlinking ? 'text-blink 0.5s ease-in-out 3' : 'neon-pulse 3s ease-in-out infinite alternate' 
-                            }}
-                        >
-                            {ticketNumber}
-                        </span>
-                        
-                        {/* Gender Identification */}
-                        {gender && gender !== Gender.NONE && (
-                            <div className={`mt-[1vh] flex items-center gap-[1.5cqi] px-[3cqi] py-[1vh] rounded-full bg-slate-900/80 backdrop-blur-md border shadow-xl animate-in fade-in slide-in-from-bottom-4 duration-500 ${gender === Gender.MALE ? 'border-blue-500/50 text-blue-200' : 'border-pink-500/50 text-pink-200'}`}>
-                                {gender === Gender.MALE ? <Icons.Male className="w-[2.5vh] h-[2.5vh]" /> : <Icons.Female className="w-[2.5vh] h-[2.5vh]" />}
-                                <div className="flex items-center gap-2">
-                                    <span className="text-[min(1.8cqi,1.8vh)] font-black uppercase tracking-widest">{gender === Gender.MALE ? 'MALE' : 'FEMALE'}</span>
-                                    <span className="text-[min(2cqi,2vh)] font-serif opacity-80">{gender === Gender.MALE ? 'مرد' : 'خاتون'}</span>
-                                </div>
-                            </div>
-                        )}
-                  </div>
-
-                  {/* RIGHT COLUMN (25%) */}
-                  <div className="w-[25%] h-full flex flex-col items-center justify-center p-[1vh] min-w-0">
-                      {(isRight || isStraight) && (
-                          <div className="flex flex-col items-center justify-center animate-pulse drop-shadow-2xl">
-                              <span className="text-[min(2cqi,2vh)] font-black text-emerald-400 uppercase tracking-widest leading-none mb-1 whitespace-nowrap">
-                                  {isStraight ? 'STRAIGHT' : 'GO RIGHT'}
-                              </span>
-                              {isStraight ? (
-                                  <Icons.ArrowUp className="w-[8vh] h-[8vh] text-emerald-400 drop-shadow-[0_0_30px_rgba(52,211,153,0.8)] animate-bounce" strokeWidth={3} />
-                              ) : (
-                                  <Icons.ArrowRight className="w-[8vh] h-[8vh] text-emerald-400 drop-shadow-[0_0_30px_rgba(52,211,153,0.8)] animate-bounce-right" strokeWidth={3} />
-                              )}
-                              <span className="text-[min(2.5cqi,2.5vh)] font-serif font-bold text-emerald-400 leading-none mt-1 whitespace-nowrap">
-                                  {isStraight ? 'سیدھا جائیں' : 'دائیں جانب'}
-                              </span>
-                          </div>
-                      )}
-                      {(isLeft && groupName) && (
-                          <CategoryHub name={groupName} nameUrdu={groupNameUrdu} icon={groupIcon} customIcon={groupCustomIcon} color={groupColor} />
-                      )}
-                  </div>
-              </div>
+    if (!ticketNumber) {
+        return (
+            <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 rounded-[4rem] border-8 border-slate-800 shadow-inner">
+                <Icons.MonitorPlay className="w-[15vw] h-[15vw] text-slate-800 mb-12" />
+                <p className="text-[5vw] font-black uppercase tracking-[0.2em] text-slate-700">Please Wait</p>
             </div>
-          ) : (<div className="w-full h-full flex flex-col items-center justify-center text-slate-600"><Icons.MonitorPlay size={80} className="mb-4 opacity-20" /><p className="text-3xl font-black uppercase tracking-[0.2em] opacity-30">System Standby</p></div>)}
-      </div>
-    );
-});
+        );
+    }
 
-// Clinic Pulse Section
-const ClinicPulseSection = React.memo(({ operationalGroups, maxWaiting, showEng, showUrdu }: any) => {
-    const pulseScrollRef = useRef<HTMLDivElement>(null);
-    useAutoScroll(pulseScrollRef, 0.6, operationalGroups.length);
-    return (
-      <div className="flex-1 flex flex-col bg-slate-900/90 rounded-2xl border border-white/10 overflow-hidden shadow-2xl min-h-0">
-         <div className="p-[1.5vh] border-b border-white/10 shrink-0 bg-slate-900/40 flex items-center justify-between">
-            <h3 className="text-slate-400 font-black uppercase tracking-[0.2em] flex items-center gap-2" style={{ fontSize: 'clamp(0.7rem, 1.2vh, 1rem)' }}><Icons.Activity className="w-[1.8vh] h-[1.8vh] text-emerald-500" /> {showEng && "Clinic Pulse"}{showEng && showUrdu && " / "}{showUrdu && "کلینک کی صورتحال"}</h3>
-            <div className="flex gap-2 text-[9px] font-bold uppercase tracking-wider text-slate-500"><span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Normal</span><span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-amber-500" /> Busy</span><span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-rose-500" /> High</span></div>
-         </div>
-         <div ref={pulseScrollRef} className="flex-1 overflow-y-auto no-scrollbar scroll-smooth p-[1vh]">
-            <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-[1vh]">
-                {operationalGroups.map((group: any, idx: number) => {
-                  const loadPercent = Math.min(100, (group.waiting / maxWaiting) * 100);
-                  let loadColor = 'emerald'; if (group.waiting > 5) loadColor = 'amber'; if (group.waiting > 15) loadColor = 'rose'; if (group.isOffline) loadColor = 'slate';
-                  return (
-                    <div key={`${group.id}-${idx}`} className={`relative overflow-hidden rounded-xl border transition-all duration-500 flex flex-col shadow-lg group ${group.isOffline ? 'bg-slate-900 bg-opacity-60 border-slate-700 opacity-60' : `bg-white bg-opacity-5 border-${loadColor}-500 border-opacity-30 hover:bg-white hover:bg-opacity-10`}`}>
-                        <div className={`absolute -right-[2vh] -bottom-[2vh] opacity-10 transform rotate-12 transition-transform duration-700 group-hover:scale-110 group-hover:rotate-6 text-${loadColor}-400`}>
-                            <DynamicIcon icon={group.icon} customIcon={group.customIcon} size="12vh" />
+    if (isGridMode) {
+        // --- VIEW 2: FOCUS GRID CENTER TILE ---
+        return (
+            <div className={`w-full h-full relative overflow-hidden bg-slate-900 flex flex-col items-center justify-center ${isBlinking ? 'bg-slate-800' : ''}`}>
+                <div className={`absolute inset-0 border-[20px] ${isBlinking ? 'border-emerald-500 animate-pulse' : 'border-slate-700'} pointer-events-none z-20`} />
+                
+                {/* Background Watermark */}
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white opacity-[0.05] pointer-events-none z-0 transform -rotate-12">
+                    <DynamicIcon icon={deptIcon} customIcon={deptCustomIcon} size="40vw" />
+                </div>
+
+                <div className="relative z-10 flex flex-col items-center w-full h-full justify-between py-[4vh]">
+                    {/* Top: Category Badge */}
+                    <div className={`flex items-center gap-4 px-8 py-2 rounded-full bg-${groupColor || 'slate'}-900/80 border-2 border-${groupColor || 'slate'}-500/50 backdrop-blur-md`}>
+                        <span className={`font-black uppercase text-${groupColor}-100 text-[3vh]`}>{groupName}</span>
+                        {groupNameUrdu && <span className={`font-serif text-${groupColor}-300 text-[2.5vh]`}>{groupNameUrdu}</span>}
+                    </div>
+
+                    {/* Middle: Token Number */}
+                    <div 
+                        className={`font-black text-white leading-none tracking-tighter tabular-nums drop-shadow-[0_10px_60px_rgba(0,0,0,0.8)] ${isBlinking ? 'scale-110' : 'scale-100'} transition-transform duration-500`} 
+                        style={{ fontSize: 'clamp(10rem, 25vw, 30rem)', textShadow: '0 0 40px rgba(16,185,129,0.2)' }}
+                    >
+                        {ticketNumber}
+                    </div>
+
+                    {/* Bottom: Destination & Direction */}
+                    <div className="w-[90%] bg-emerald-600 rounded-[3rem] p-6 flex items-center justify-between shadow-2xl border-4 border-emerald-400/30">
+                        {/* Direction Arrow */}
+                        <div className="flex items-center gap-4 text-emerald-100 pl-4">
+                             {isLeft && <Icons.ArrowLeft className="w-[8vh] h-[8vh] animate-bounce-left" strokeWidth={3} />}
+                             {isRight && <Icons.ArrowRight className="w-[8vh] h-[8vh] animate-bounce-right" strokeWidth={3} />}
+                             {isStraight && <Icons.ArrowUp className="w-[8vh] h-[8vh] animate-bounce" strokeWidth={3} />}
+                             <div className="flex flex-col">
+                                 <span className="font-black uppercase text-[2vh] tracking-widest opacity-80">
+                                     {isLeft ? 'GO LEFT' : isRight ? 'GO RIGHT' : 'STRAIGHT'}
+                                 </span>
+                                 <span className="font-serif text-[2.5vh] leading-none">
+                                     {isLeft ? 'بائیں طرف' : isRight ? 'دائیں طرف' : 'سیدھا'}
+                                 </span>
+                             </div>
                         </div>
-                        {loadColor === 'rose' && !group.isOffline && (<div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-rose-500 animate-pulse shadow-[0_0_15px_rgba(244,63,94,0.6)]" />)}
-                        <div className="p-[1vh] flex flex-col h-full relative z-10 min-h-[90px]">
-                            <div className="flex items-start justify-between mb-1 gap-2"><div className="flex items-stretch gap-2 min-w-0 flex-1"><div className={`rounded-lg ${group.isOffline ? 'bg-slate-800 text-slate-500' : `bg-${loadColor}-500 bg-opacity-20 text-${loadColor}-300`} shrink-0 flex items-center justify-center aspect-square w-auto min-h-[6vh] p-1`}>
-                                <DynamicIcon icon={group.icon} customIcon={group.customIcon} size="70%" />
-                            </div><div className="flex flex-col justify-center min-w-0 py-0.5">{group.displayEng && <h4 className={`font-black text-white uppercase tracking-tight leading-none truncate ${group.isOffline ? 'text-slate-400' : ''}`} style={{ fontSize: 'clamp(0.8rem, 1.2vw, 1.2rem)' }}>{group.name}</h4>}{group.displayUrdu && group.nameUrdu && <h5 className={`font-serif leading-none mt-0.5 truncate ${group.isOffline ? 'text-slate-500' : 'text-slate-300'}`} style={{ fontSize: 'clamp(0.8rem, 1.1vw, 1.1rem)' }}>{group.nameUrdu}</h5>}</div></div>{group.isOffline && <span className="self-center px-1 py-0.5 rounded-sm bg-slate-800 text-slate-400 text-[8px] font-black uppercase tracking-widest border border-slate-700 shrink-0">Closed</span>}</div>
-                            <div className="flex-1 flex items-end justify-between gap-2 mt-1"><div className="flex items-end gap-2"><span className={`font-black leading-none tracking-tighter tabular-nums text-${loadColor}-400`} style={{ fontSize: 'clamp(2rem, 3vw, 3rem)', textShadow: `0 0 20px var(--tw-color-${loadColor}-500)` }}>{group.waiting}</span><div className="flex flex-col mb-1 gap-0.5"><Icons.Users className={`text-${loadColor}-500 opacity-50`} style={{ width: 'clamp(1.2rem, 1.5vw, 1.8rem)', height: 'clamp(1.2rem, 1.5vw, 1.8rem)' }} /><span className="text-[9px] md:text-[10px] font-bold uppercase tracking-widest text-slate-500 leading-none">Waiting</span></div></div>{!group.isOffline && (<div className="flex flex-col items-end mb-0.5 opacity-90"><div className="flex items-end gap-1 text-white"><Icons.Clock className={`text-${loadColor}-400 mb-0.5`} style={{ width: 'clamp(1rem, 2vh, 1.5rem)', height: 'clamp(1rem, 2vh, 1.5rem)' }} /><span className="font-black tabular-nums leading-none" style={{ fontSize: 'clamp(1.5rem, 2.5vh, 2.5rem)' }}>{group.avgWait}m</span></div><span className="font-bold uppercase tracking-wider text-slate-500 mt-0.5" style={{ fontSize: 'clamp(0.5rem, 1vh, 0.8rem)' }}>Avg Wait</span></div>)}</div>
-                            {!group.isOffline && (<div className="w-full h-1 bg-white bg-opacity-10 rounded-full mt-1 overflow-hidden"><div className={`h-full rounded-full transition-all duration-1000 bg-gradient-to-r from-${loadColor}-600 to-${loadColor}-400`} style={{ width: `${Math.max(5, loadPercent)}%` }} /></div>)}
+
+                        {/* Room Name */}
+                        <div className="text-right pr-4">
+                             <div className="font-black uppercase text-white text-[6vh] leading-none">{counterName}</div>
+                             <div className="font-serif text-emerald-200 text-[3vh] mt-1">تشریف لائیں</div>
                         </div>
                     </div>
-                  );
-                })}
+                </div>
             </div>
-         </div>
+        );
+    }
+
+    // --- VIEW 1: STANDARD LAYOUT TILE ---
+    return (
+      <div className={`w-full h-full relative rounded-[4rem] overflow-hidden shadow-2xl border-[10px] bg-slate-900 flex flex-col ${isBlinking ? 'border-emerald-400 shadow-emerald-900/50' : 'border-slate-700'}`}>
+          {/* Background Watermark */}
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white opacity-[0.03] pointer-events-none z-0 transform -rotate-12">
+              <DynamicIcon icon={deptIcon} customIcon={deptCustomIcon} size="50vw" />
+          </div>
+
+          {/* Header */}
+          <div className="relative z-10 w-full bg-slate-800/80 backdrop-blur-xl py-[3vh] px-[4vw] flex items-center justify-between border-b border-white/10 shrink-0 h-[18%]">
+              <div className="flex flex-col justify-center h-full">
+                  {displayEng && <span className="font-black text-white uppercase tracking-tight leading-none" style={{ fontSize: 'clamp(3rem, 5vw, 6rem)' }}>{departmentName}</span>}
+                  {displayUrdu && <span className="font-serif text-slate-400 leading-none mt-2" style={{ fontSize: 'clamp(2rem, 4vw, 5rem)' }} dir="rtl">{departmentNameUrdu}</span>}
+              </div>
+              
+              {groupName && (
+                  <div className={`flex flex-col items-end justify-center px-8 py-2 rounded-3xl bg-${groupColor || 'slate'}-900/50 border-4 border-${groupColor || 'slate'}-500/30`}>
+                      <span className={`font-black uppercase text-${groupColor}-100 text-[1.5vw] leading-tight`}>{groupName}</span>
+                      {groupNameUrdu && <span className={`font-serif text-${groupColor}-300 text-[1.2vw] leading-tight`}>{groupNameUrdu}</span>}
+                  </div>
+              )}
+          </div>
+
+          {/* Content Body */}
+          <div className="flex-1 flex relative z-10 h-[82%]">
+              {/* Left Panel: Direction/Gender */}
+              <div className="w-[20%] flex flex-col items-center justify-center border-r border-white/5 bg-black/20">
+                  {isLeft ? (
+                      <div className="animate-bounce-left flex flex-col items-center text-emerald-400">
+                          <Icons.ArrowLeft className="w-[10vw] h-[10vw] drop-shadow-[0_0_30px_rgba(16,185,129,0.4)]" strokeWidth={3} />
+                          <span className="font-black text-[2vw] uppercase mt-6 tracking-widest">Go Left</span>
+                      </div>
+                  ) : (gender && gender !== Gender.NONE) && (
+                      <div className={`flex flex-col items-center ${gender === Gender.MALE ? 'text-blue-400' : 'text-pink-400'}`}>
+                          {gender === Gender.MALE ? <Icons.Male className="w-[10vw] h-[10vw]" /> : <Icons.Female className="w-[10vw] h-[10vw]" />}
+                          <span className="font-black uppercase text-[2.5vw] mt-6 tracking-widest">{gender}</span>
+                      </div>
+                  )}
+              </div>
+
+              {/* Center Panel: Token Number */}
+              <div className="flex-1 flex flex-col items-center justify-center relative">
+                  <div className="text-[3vw] font-black uppercase text-slate-500 tracking-[0.4em] mb-[2vh]">Token Number</div>
+                  <div 
+                    className={`font-black text-white leading-none tracking-tighter tabular-nums drop-shadow-[0_10px_60px_rgba(0,0,0,0.8)] ${isBlinking ? 'animate-pulse' : ''}`} 
+                    style={{ fontSize: 'clamp(12rem, 25vw, 35rem)', textShadow: '0 0 40px rgba(16,185,129,0.2)' }}
+                  >
+                      {ticketNumber}
+                  </div>
+              </div>
+
+              {/* Right Panel: Direction/Counter */}
+              <div className="w-[30%] flex flex-col items-center justify-center border-l border-white/5 bg-emerald-900/10">
+                  {(isRight || isStraight) ? (
+                      <div className="animate-bounce-right flex flex-col items-center text-emerald-400">
+                          {isStraight ? <Icons.ArrowUp className="w-[10vw] h-[10vw]" strokeWidth={3} /> : <Icons.ArrowRight className="w-[10vw] h-[10vw]" strokeWidth={3} />}
+                          <span className="font-black text-[2vw] uppercase mt-6 tracking-widest">{isStraight ? 'Straight' : 'Go Right'}</span>
+                      </div>
+                  ) : (
+                      <div className="flex flex-col items-center justify-center w-full h-full bg-emerald-600 p-6 text-center">
+                          <span className="text-[1.5vw] font-bold text-emerald-100 uppercase tracking-widest mb-4 opacity-80">Proceed To</span>
+                          <span className="text-[6vw] font-black text-white uppercase leading-[0.9] break-words w-full drop-shadow-md">{counterName}</span>
+                          <div className="mt-6 px-8 py-2 bg-black/20 rounded-full">
+                              <span className="text-[2vw] font-serif text-emerald-50">تشریف لائیں</span>
+                          </div>
+                      </div>
+                  )}
+              </div>
+          </div>
       </div>
     );
 });
+
+// --- MAIN PAGE COMPONENT ---
 
 export const Display: React.FC<DisplayProps> = ({ onExit }) => {
   const { state, isNetworkSync } = useQueue();
-  const [announcementMsg, setAnnouncementMsg] = useState("PLEASE REMAIN SEATED UNTIL YOUR NUMBER IS CALLED • KEEP YOUR SLIPS READY • سی ایم ایچ کوئٹہ میں خوش آمدید");
+  const [announcementMsg] = useState("PLEASE REMAIN SEATED UNTIL YOUR NUMBER IS CALLED • KEEP YOUR SLIPS READY • سی ایم ایچ کوئٹہ میں خوش آمدید");
   const showEng = state.systemLanguage !== 'URDU';
   const showUrdu = state.systemLanguage !== 'ENGLISH';
+  
   const [hasInteracted, setHasInteracted] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  
+  // VIEW MODE STATE
+  const [viewMode, setViewMode] = useState<ViewMode>('STANDARD');
+
+  // Exit Gesture
   const [isHolding, setIsHolding] = useState(false);
   const exitTimerRef = useRef<any>(null);
   const isMounted = useRef(true);
 
-  // Check URL params for autostart & Audio Resume
+  // Auto Start logic
   useEffect(() => {
       const params = new URLSearchParams(window.location.search);
-      const attemptAutoResume = async () => {
-          try {
-              const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-              if (AudioContextClass) {
-                  const ctx = new AudioContextClass();
-                  if (ctx.state === 'suspended') await ctx.resume();
-                  if (ctx.state === 'running') setHasInteracted(true);
-                  ctx.close();
-              }
-          } catch(e) { console.log("Auto-audio resume failed"); }
-      };
-
       if (params.get('autostart') === 'true') {
           handleStartDisplay();
-      } else {
-          attemptAutoResume();
       }
   }, []);
 
-  // Re-implementing essential audio logic
   useEffect(() => {
     isMounted.current = true;
-    return () => { isMounted.current = false; try { if(currentSourceRef.current) currentSourceRef.current.stop(); if(audioContextRef.current) audioContextRef.current.close(); } catch(e) {} };
+    return () => { isMounted.current = false; try { currentSourceRef.current?.stop(); audioContextRef.current?.close(); } catch(e) {} };
   }, []);
 
   const getAudioContext = () => {
     if (!audioContextRef.current) {
         try {
             const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-            if (!AudioContextClass) return null;
-            audioContextRef.current = new AudioContextClass();
-        } catch(e) { return null; }
+            if (AudioContextClass) audioContextRef.current = new AudioContextClass();
+        } catch(e) {}
     }
     return audioContextRef.current;
   };
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
-    if (exitTimerRef.current) return;
     setIsHolding(true);
-    exitTimerRef.current = setTimeout(() => {
-      if (navigator.vibrate) navigator.vibrate(200); 
-      exitTimerRef.current = null;
-      if (isMounted.current) onExit(); 
-    }, 2000);
+    exitTimerRef.current = setTimeout(() => { if (isMounted.current) onExit(); }, 2000);
   };
 
-  const handlePointerUp = () => { if (exitTimerRef.current) { clearTimeout(exitTimerRef.current); exitTimerRef.current = null; } setIsHolding(false); };
-  
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') onExit(); };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onExit]);
+  const handlePointerUp = () => { clearTimeout(exitTimerRef.current); setIsHolding(false); };
 
-  // --- SPOTLIGHT FRESHNESS LOGIC ---
+  // Data processing
   const [spotlightToken, setSpotlightToken] = useState<Token | null>(null);
   const maxServedAtRef = useRef<number>(0);
 
   const servingTokens = useMemo(() => state.tokens.filter(t => t.status === TokenStatus.SERVING).sort((a, b) => (b.servedAt || 0) - (a.servedAt || 0)), [state.tokens]);
   
   useEffect(() => {
-      const candidate = servingTokens[0];
-      if (!candidate) {
-          setSpotlightToken(null);
-          return;
-      }
+      const newest = servingTokens[0];
+      if (!newest) { setSpotlightToken(null); return; }
       
-      const candidateTime = candidate.servedAt || 0;
-      
-      // If this token is newer than anything we've shown before, show it.
+      const candidateTime = newest.servedAt || 0;
       if (candidateTime > maxServedAtRef.current) {
           maxServedAtRef.current = candidateTime;
-          setSpotlightToken(candidate);
+          setSpotlightToken(newest);
       } else {
-          // It's older or same. 
-          // Only show if it's the SAME token we are already showing (stable).
-          // If the top token is an old one (e.g. newer one completed), we hide spotlight.
-          setSpotlightToken(prev => (prev && prev.id === candidate.id ? candidate : null));
+          setSpotlightToken(prev => (prev && prev.id === newest.id ? newest : null));
       }
-  }, [servingTokens]);
+  }, [state.tokens]);
 
-  const secondaryServing = useMemo(() => {
-      return servingTokens.filter(t => t.id !== spotlightToken?.id).slice(0, 25);
-  }, [servingTokens, spotlightToken]);
-
-  // Mapped for NowServingSection
-  const currentToken = spotlightToken;
+  const secondaryServing = useMemo(() => servingTokens.filter(t => t.id !== spotlightToken?.id).slice(0, 15), [servingTokens, spotlightToken]);
 
   const operationalGroups = useMemo(() => {
     if (state.displayMode === 'DEPARTMENT') {
       return state.departments.filter(d => d.isActive !== false).map(d => {
         const groupTokens = state.tokens.filter(t => t.departmentId === d.id);
         const activeCounters = state.counters.filter(c => c.departmentId === d.id && c.isOnline).length;
-        const isOffline = activeCounters === 0;
         return {
-          id: d.id, name: d.name, nameUrdu: d.nameUrdu, icon: d.icon, customIcon: d.customIcon, color: isOffline ? 'slate' : (d.color || 'blue'),
-          waiting: groupTokens.filter(t => t.status === TokenStatus.WAITING).length, avgWait: getAvgWait(groupTokens), isOffline, displayEng: d.showEnglish ?? showEng, displayUrdu: d.showUrdu ?? showUrdu
+          id: d.id, name: d.name, nameUrdu: d.nameUrdu, icon: d.icon, customIcon: d.customIcon, 
+          waiting: groupTokens.filter(t => t.status === TokenStatus.WAITING).length, 
+          avgWait: getAvgWait(groupTokens), isOffline: activeCounters === 0, 
+          displayEng: d.showEnglish ?? showEng, displayUrdu: d.showUrdu ?? showUrdu
         };
       });
     } else {
@@ -493,54 +515,47 @@ export const Display: React.FC<DisplayProps> = ({ onExit }) => {
         const d = state.departments.find(dept => dept.id === c.departmentId);
         const groupTokens = state.tokens.filter(t => t.counterId === c.id || (t.departmentId === c.departmentId && t.status === TokenStatus.WAITING));
         return {
-          id: c.id, name: c.name, nameUrdu: d?.nameUrdu, icon: d?.icon, customIcon: d?.customIcon, color: d?.color || 'blue',
-          waiting: groupTokens.filter(t => t.status === TokenStatus.WAITING).length, avgWait: getAvgWait(state.tokens.filter(t => t.counterId === c.id)), isOffline: false, displayEng: d?.showEnglish ?? showEng, displayUrdu: d?.showUrdu ?? showUrdu
+          id: c.id, name: c.name, nameUrdu: d?.nameUrdu, icon: d?.icon, customIcon: d?.customIcon,
+          waiting: groupTokens.filter(t => t.status === TokenStatus.WAITING).length, 
+          avgWait: getAvgWait(state.tokens.filter(t => t.counterId === c.id)), isOffline: false,
+          displayEng: d?.showEnglish ?? showEng, displayUrdu: d?.showUrdu ?? showUrdu
         };
       });
     }
   }, [state.displayMode, state.departments, state.counters, state.tokens, showEng, showUrdu]);
 
-  const maxWaiting = useMemo(() => Math.max(...operationalGroups.map(g => g.waiting), 1), [operationalGroups]);
-
   const nowServingProps = useMemo(() => {
-      const patientGroup = state.patientGroups?.find(g => g.id === currentToken?.patientGroupId);
-      const dept = state.departments.find(d => d.id === currentToken?.departmentId);
-      const counter = state.counters.find(c => c.id === currentToken?.counterId);
+      const t = spotlightToken;
+      const pg = state.patientGroups?.find(g => g.id === t?.patientGroupId);
+      const d = state.departments.find(x => x.id === t?.departmentId);
+      const c = state.counters.find(x => x.id === t?.counterId);
       return {
-          ticketNumber: currentToken?.ticketNumber, gender: currentToken?.gender, departmentName: dept?.name, departmentNameUrdu: dept?.nameUrdu, counterName: counter?.name,
-          deptIcon: dept?.icon, deptCustomIcon: dept?.customIcon, groupName: patientGroup?.name, groupNameUrdu: patientGroup?.nameUrdu, groupColor: patientGroup?.color, groupIcon: patientGroup?.icon, groupCustomIcon: patientGroup?.customIcon,
-          showUrdu: showUrdu, displayEng: dept?.showEnglish ?? showEng, displayUrdu: dept?.showUrdu ?? showUrdu, direction: counter?.direction 
+          ticketNumber: t?.ticketNumber, gender: t?.gender, departmentName: d?.name, departmentNameUrdu: d?.nameUrdu, counterName: c?.name,
+          deptIcon: d?.icon, deptCustomIcon: d?.customIcon, groupName: pg?.name, groupNameUrdu: pg?.nameUrdu, groupColor: pg?.color, groupIcon: pg?.icon, groupCustomIcon: pg?.customIcon,
+          showUrdu, displayEng: d?.showEnglish ?? showEng, displayUrdu: d?.showUrdu ?? showUrdu, direction: c?.direction 
       };
-  }, [currentToken, state.patientGroups, state.departments, state.counters, showEng, showUrdu]);
+  }, [spotlightToken, state.patientGroups, state.departments, state.counters, showEng, showUrdu]);
 
-  // Audio Announcer (Gemini Logic)
+  // Audio Logic
   const lastAnnouncedKey = useRef<string>(""); 
-  
   useEffect(() => {
-    // Only announce if spotlight is active
-    if (!currentToken || !currentToken.servedAt || !hasInteracted) return;
+    if (!spotlightToken || !spotlightToken.servedAt || !hasInteracted) return;
+    const currentKey = `${spotlightToken.id}_${spotlightToken.servedAt}`;
     
-    // Composite Key allows recall announcements (ID + Timestamp)
-    const currentKey = `${currentToken.id}_${currentToken.servedAt}`;
-    const isRecent = (Date.now() - currentToken.servedAt) < 8000;
-    
-    if (currentKey !== lastAnnouncedKey.current && isRecent) {
+    if (currentKey !== lastAnnouncedKey.current && (Date.now() - spotlightToken.servedAt) < 8000) {
       lastAnnouncedKey.current = currentKey;
-      
-      const counterName = state.counters.find(c => c.id === currentToken.counterId)?.name || "Counter";
-      const ticketFormatted = currentToken.ticketNumber.replace(/-/g, ' '); 
+      const counterName = state.counters.find(c => c.id === spotlightToken.counterId)?.name || "Counter";
+      const ticketFormatted = spotlightToken.ticketNumber.replace(/-/g, ' '); 
       let textParts: string[] = [];
       if (showEng) textParts.push(`Token number ${ticketFormatted}, please proceed to ${counterName}.`);
       if (showUrdu) textParts.push(`ٹکن نمبر ${ticketFormatted}, ${counterName} پر تشریف لائیں`);
-      if (textParts.length === 0) return;
-      const textToSpeak = textParts.join('   .   '); 
-
+      
       const speak = async () => {
           try {
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             const response = await ai.models.generateContent({
                 model: "gemini-2.5-flash-preview-tts",
-                contents: [{ parts: [{ text: textToSpeak }] }],
+                contents: [{ parts: [{ text: textParts.join('   .   ') }] }],
                 config: { responseModalities: [Modality.AUDIO], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } } },
             });
             const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
@@ -548,7 +563,7 @@ export const Display: React.FC<DisplayProps> = ({ onExit }) => {
                 const ctx = getAudioContext();
                 if (!ctx) return; 
                 if (ctx.state === 'suspended') await ctx.resume();
-                if (currentSourceRef.current) { try { currentSourceRef.current.stop(); currentSourceRef.current.disconnect(); } catch(e) {} }
+                if (currentSourceRef.current) { try { currentSourceRef.current.stop(); } catch(e) {} }
                 playChime(ctx, ctx.currentTime);
                 const buffer = await decodePCM(base64Audio, ctx);
                 const source = ctx.createBufferSource();
@@ -557,12 +572,11 @@ export const Display: React.FC<DisplayProps> = ({ onExit }) => {
                 source.start(ctx.currentTime + 0.6);
                 currentSourceRef.current = source;
             }
-          } catch (e) { console.error("Gemini TTS failed", e); }
+          } catch (e) { console.error("TTS Error", e); }
       };
-      const t = setTimeout(speak, 500);
-      return () => clearTimeout(t);
+      setTimeout(speak, 500);
     }
-  }, [currentToken?.id, currentToken?.servedAt, showEng, showUrdu, hasInteracted]);
+  }, [spotlightToken?.id, spotlightToken?.servedAt, hasInteracted]);
 
   const handleStartDisplay = () => {
     setHasInteracted(true);
@@ -570,95 +584,152 @@ export const Display: React.FC<DisplayProps> = ({ onExit }) => {
     if (ctx && ctx.state === 'suspended') ctx.resume();
   };
 
-  const isSidebarMode = secondaryServing.length > 0 && secondaryServing.length <= 4;
-
   if (!hasInteracted) {
       return (
-          <div className="fixed inset-0 bg-slate-900 z-[100] flex flex-col items-center justify-center p-8 text-center animate-in fade-in cursor-pointer" onClick={handleStartDisplay}>
-              <div className="w-24 h-24 bg-emerald-500 rounded-full flex items-center justify-center mb-8 shadow-[0_0_50px_rgba(16,185,129,0.5)] animate-pulse"><Icons.Play size={48} className="text-white ml-2" /></div>
-              <h1 className="text-4xl md:text-6xl font-black text-white mb-4 uppercase tracking-widest">Start Display</h1>
-              <p className="text-slate-400 text-lg md:text-xl font-medium max-w-lg">Click anywhere to enable audio announcements and start the queue display.</p>
+          <div className="fixed inset-0 bg-slate-950 z-[100] flex flex-col items-center justify-center cursor-pointer font-sans" onClick={handleStartDisplay}>
+              <div className="w-40 h-40 bg-emerald-500 rounded-full flex items-center justify-center mb-8 shadow-[0_0_100px_rgba(16,185,129,0.6)] animate-pulse">
+                  <Icons.Play size={80} className="text-white ml-2" />
+              </div>
+              <h1 className="text-7xl font-black text-white mb-6 uppercase tracking-widest">Start Display</h1>
+              <p className="text-slate-400 text-3xl font-bold">Tap anywhere to initialize audio.</p>
           </div>
       );
   }
 
+  // --- GRID MAPPER HELPER ---
+  const getGridContent = (index: number) => {
+      // 12 Slots for History surrounding the 2x2 Center (Slots 6,7,10,11)
+      // Map grid index (0-15) to history array index (0-11)
+      // 0,1,2,3 -> 0,1,2,3
+      // 4,5 -> 4,5
+      // 8,9 -> 6,7
+      // 12,13,14,15 -> 8,9,10,11
+      let historyIndex = -1;
+      if (index <= 3) historyIndex = index;
+      else if (index <= 5) historyIndex = index;
+      else if (index >= 8 && index <= 9) historyIndex = index - 2;
+      else if (index >= 12) historyIndex = index - 4;
+
+      if (historyIndex >= 0 && historyIndex < secondaryServing.length) {
+          return <SessionCard token={secondaryServing[historyIndex]} minimal />;
+      }
+      return null;
+  };
+
   return (
-    <div className="h-full bg-[#020617] text-white flex flex-col overflow-hidden relative font-sans selection:bg-emerald-500/30">
-      
-      {/* Sync Status Indicator */}
+    <div className="h-screen w-screen bg-[#020617] text-white flex flex-col overflow-hidden relative font-sans select-none">
+      {/* Offline Banner */}
       {!isNetworkSync && (
-        <div className="absolute top-2 right-2 z-50 bg-red-600/90 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-lg animate-pulse pointer-events-none">
-           <Icons.WifiOff size={14} /> Reconnecting...
+        <div className="absolute top-4 right-4 z-50 bg-red-600 text-white px-8 py-2 rounded-full text-2xl font-bold uppercase tracking-wider flex items-center gap-4 shadow-2xl animate-pulse pointer-events-none">
+           <Icons.WifiOff size={32} /> Offline Mode
         </div>
       )}
 
+      {/* View Switcher - Hidden in bottom corner */}
+      <div className="absolute bottom-20 right-6 z-50 opacity-20 hover:opacity-100 transition-opacity">
+          <button 
+            onClick={() => setViewMode(viewMode === 'STANDARD' ? 'FOCUS_GRID' : 'STANDARD')}
+            className="bg-white/10 hover:bg-white/20 p-4 rounded-full backdrop-blur-md border border-white/10"
+          >
+             {viewMode === 'STANDARD' ? <Icons.Layout size={24} /> : <Icons.Layers size={24} />}
+          </button>
+      </div>
+
+      {/* HEADER */}
       <header 
-        onPointerDown={handlePointerDown} onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp} onContextMenu={(e) => e.preventDefault()}
-        style={{ touchAction: 'none' }}
-        className="relative px-[2vw] py-[1vh] flex justify-between items-center bg-slate-900/90 backdrop-blur-md border-b border-white/5 z-20 shrink-0 h-[12vh] min-h-[80px] cursor-pointer select-none active:bg-slate-800/50 transition-colors overflow-hidden"
+        onPointerDown={handlePointerDown} onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp}
+        className="relative px-[2vw] py-[2vh] flex justify-between items-center bg-slate-900/90 backdrop-blur-md border-b border-white/10 z-20 shrink-0 h-[15vh]"
       >
         <div className={`absolute top-0 left-0 h-2 bg-red-500 z-50 transition-all ease-linear duration-[2000ms] ${isHolding ? 'w-full' : 'w-0'}`} />
-        <div className="flex items-center gap-1.5vw">
-           <div className="h-[8vh] w-[8vh] min-h-[48px] bg-emerald-600 rounded-lg flex items-center justify-center shadow-2xl border border-white/20 hover:scale-105 active:scale-95 transition-transform cursor-pointer"><Icons.Activity className="text-white w-1/2 h-1/2" /></div>
-           <div>
-              {showEng && <h1 className="font-black tracking-tight text-white uppercase flex items-center gap-[0.5vw] drop-shadow-md leading-none whitespace-nowrap" style={{ fontSize: 'clamp(2rem, 4vh, 6rem)' }}>{state.clinicName}<MedicalHeartbeat /></h1>}
-              {showUrdu && <h2 className="font-serif text-slate-400 mt-[0.5vh] opacity-90 leading-none" style={{ fontSize: 'clamp(1.5rem, 3vh, 4rem)' }} dir="rtl">{state.clinicNameUrdu}</h2>}
+        
+        <div className="flex items-center gap-[2vw]">
+           <div className="h-[10vh] w-[10vh] bg-emerald-600 rounded-[1.5rem] flex items-center justify-center shadow-2xl border border-white/20">
+               <Icons.Activity className="text-white w-[6vh] h-[6vh]" />
+           </div>
+           <div className="flex flex-col justify-center">
+              {showEng && <h1 className="font-black tracking-tight text-white uppercase leading-none drop-shadow-lg mb-2" style={{ fontSize: 'clamp(3rem, 5vw, 6rem)' }}>{state.clinicName}</h1>}
+              {showUrdu && <h2 className="font-serif text-slate-400 opacity-90 leading-none" style={{ fontSize: 'clamp(2rem, 4vw, 5rem)' }} dir="rtl">{state.clinicNameUrdu}</h2>}
            </div>
         </div>
         <ClockWidget />
       </header>
 
-      <main className="flex-1 px-[2vw] py-[0.5vh] overflow-hidden relative z-10 w-full">
-         {isSidebarMode ? (
-            <div className="flex h-full gap-[1vw]">
-                <div className="flex-1 flex flex-col gap-[2vh] min-w-0 h-full">
-                    <NowServingSection {...nowServingProps} />
-                    <ActiveSessionsPanel tokens={secondaryServing} variant="sidebar" showEng={showEng} showUrdu={showUrdu} />
-                </div>
-                <div className="flex-1 h-full min-w-0 flex flex-col">
-                    <ClinicPulseSection operationalGroups={operationalGroups} maxWaiting={maxWaiting} showEng={showEng} showUrdu={showUrdu} />
-                </div>
-            </div>
+      {/* MAIN CONTENT AREA */}
+      <main className="flex-1 p-[2vh] overflow-hidden relative z-10 w-full h-full">
+         
+         {viewMode === 'STANDARD' ? (
+             // --- LAYOUT 1: REFINED STANDARD ---
+             // Left: Spotlight (Top 60%) + History (Bottom 40%)
+             // Right: Full Height Departments
+             <div className="grid grid-cols-12 gap-[3vh] h-full">
+                 <div className="col-span-8 flex flex-col gap-[3vh] h-full min-h-0">
+                     <div className="flex-[1.5] min-h-0">
+                         <NowServingSection {...nowServingProps} />
+                     </div>
+                     <div className="flex-1 min-h-0">
+                         <ActiveSessionsPanel tokens={secondaryServing} showEng={showEng} showUrdu={showUrdu} />
+                     </div>
+                 </div>
+                 <div className="col-span-4 h-full min-h-0">
+                     <ClinicPulseSection operationalGroups={operationalGroups} showEng={showEng} showUrdu={showUrdu} />
+                 </div>
+             </div>
          ) : (
-            <div className="flex flex-col h-full gap-[1vh]">
-                <div className="flex-1 flex gap-[1vw] min-h-0">
-                   <NowServingSection {...nowServingProps} />
-                   <ClinicPulseSection operationalGroups={operationalGroups} maxWaiting={maxWaiting} showEng={showEng} showUrdu={showUrdu} />
-                </div>
-                <ActiveSessionsPanel tokens={secondaryServing} variant="bottom" showEng={showEng} showUrdu={showUrdu} />
-            </div>
+             // --- LAYOUT 2: FOCUS GRID ---
+             // 4x4 Grid. Center 2x2 is Spotlight. Surrounding 12 are History.
+             <div className="grid grid-cols-4 grid-rows-4 gap-4 h-full w-full">
+                 {/* Generate 16 tiles */}
+                 {Array.from({ length: 16 }).map((_, idx) => {
+                     // Check if this is the Center Block (Index 6, 7, 10, 11 - mapped to a single span)
+                     if (idx === 6) {
+                         return (
+                             <div key="center-stage" className="col-span-2 row-span-2 relative z-20 rounded-[3rem] overflow-hidden border-4 border-emerald-500 shadow-2xl">
+                                 <NowServingSection {...nowServingProps} isGridMode={true} />
+                             </div>
+                         );
+                     }
+                     // Skip indices covered by the col-span
+                     if (idx === 7 || idx === 10 || idx === 11) return null;
+
+                     // Render History Tile
+                     return (
+                         <div key={idx} className="bg-slate-800 rounded-3xl overflow-hidden border border-white/5 relative opacity-80">
+                             {getGridContent(idx)}
+                         </div>
+                     );
+                 })}
+             </div>
          )}
+
       </main>
 
-      <footer className="h-[6vh] min-h-[40px] bg-emerald-700 flex items-center overflow-hidden z-20 shrink-0 border-t-4 border-emerald-400/30">
-        <div className="bg-[#020617] h-full px-[2vw] flex items-center justify-center font-black uppercase tracking-[0.4em] z-30" style={{ fontSize: 'clamp(1rem, 2vh, 1.8rem)' }}>
-          {showEng && "Updates"}
+      {/* TICKER */}
+      <footer className="h-[8vh] bg-emerald-700 flex items-center overflow-hidden z-20 shrink-0 border-t-[8px] border-emerald-400/20">
+        <div className="bg-[#020617] h-full px-[3vw] flex items-center justify-center font-black uppercase tracking-[0.3em] z-30 shadow-2xl text-emerald-500" style={{ fontSize: 'clamp(1.5rem, 2vh, 3rem)' }}>
+          {showEng && "NOTICE"}
           {showEng && showUrdu && " / "}
-          {showUrdu && "تازہ ترین"}
+          {showUrdu && "اعلان"}
         </div>
-        <div className="flex-1 whitespace-nowrap overflow-hidden relative h-full bg-[#020617]/20">
+        <div className="flex-1 whitespace-nowrap overflow-hidden relative h-full bg-[#020617]/60">
            <div className="animate-marquee flex items-center gap-[20vw] py-2 absolute top-0 bottom-0">
-              <span className="font-black uppercase tracking-wider text-white" style={{ fontSize: 'clamp(1.5rem, 3vh, 2.5rem)' }}>{announcementMsg}</span>
-              <span className="font-black uppercase tracking-wider text-white" style={{ fontSize: 'clamp(1.5rem, 3vh, 2.5rem)' }}>{announcementMsg}</span>
+              <span className="font-black uppercase tracking-wider text-white drop-shadow-md flex items-center gap-4" style={{ fontSize: 'clamp(2rem, 3vh, 4rem)' }}>
+                  {announcementMsg}
+              </span>
+              <span className="font-black uppercase tracking-wider text-white drop-shadow-md flex items-center gap-4" style={{ fontSize: 'clamp(2rem, 3vh, 4rem)' }}>
+                  {announcementMsg}
+              </span>
            </div>
         </div>
       </footer>
+      
       <style>{`
         @keyframes marquee { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
-        .animate-marquee { animation: marquee 50s linear infinite; }
-        @keyframes neon-pulse { from { text-shadow: 0 0 10px rgba(16,185,129,0.2); } to { text-shadow: 0 0 30px rgba(16,185,129,0.8); } }
-        @keyframes burst { 0% { transform: translate(-50%, -50%) scale(0.5); opacity: 0; } 100% { transform: translate(-50%, -50%) scale(1.5); opacity: 0; } }
-        .animate-burst { animation: burst 1s ease-out forwards; }
-        @keyframes flash-attention { 
-            0% { border-color: rgba(255,255,255,0.1); box-shadow: 0 0 0 rgba(16,185,129,0); background-color: rgba(15, 23, 42, 0.6); } 
-            50% { border-color: #34d399; box-shadow: 0 0 50px rgba(52, 211, 153, 0.4); background-color: rgba(6, 78, 59, 0.4); } 
-            100% { border-color: rgba(255,255,255,0.1); box-shadow: 0 0 0 rgba(16,185,129,0); background-color: rgba(15, 23, 42, 0.6); } 
-        }
-        .animate-flash-attention { animation: flash-attention 1s ease-in-out infinite; }
-        @keyframes text-blink { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.2; transform: scale(0.95); } }
-        @keyframes bounce-left { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(-20%); } }
+        .animate-marquee { animation: marquee 60s linear infinite; }
+        @keyframes pulse-slow { 50% { opacity: .5; } }
+        .animate-pulse-slow { animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes bounce-left { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(-25%); } }
         .animate-bounce-left { animation: bounce-left 1s infinite; }
-        @keyframes bounce-right { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(20%); } }
+        @keyframes bounce-right { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(25%); } }
         .animate-bounce-right { animation: bounce-right 1s infinite; }
       `}</style>
     </div>
